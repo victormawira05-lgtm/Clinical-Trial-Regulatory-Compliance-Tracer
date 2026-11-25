@@ -1,0 +1,124 @@
+// Append to src/index.ts
+
+interface FlagGapPayload {
+  issueKey?: string;
+  reason?: string;
+  gapType?: "ORPHAN_REQUIREMENT" | "ORPHAN_ISSUE_OR_CODE" | "UNTESTED_CHANGE";
+  createRemediationSubtask?: boolean;
+}
+
+/**
+ * Rovo Action Handler: Flags a compliance gap on a Jira work item,
+ * adds a `compliance-gap` label, and optionally creates a remediation subtask.
+ */
+export async function flagGap(req: { payload?: FlagGapPayload }) {
+  const issueKey = req?.payload?.issueKey?.trim();
+  const reason =
+    req?.payload?.reason?.trim() ||
+    "Missing required regulatory traceability or verification evidence.";
+  const gapType = req?.payload?.gapType ?? "ORPHAN_ISSUE_OR_CODE";
+  const createRemediationSubtask = Boolean(req?.payload?.createRemediationSubtask);
+
+  if (!issueKey) {
+    return {
+      success: false,
+      message: "A valid Jira issueKey is required to flag a compliance gap.",
+    };
+  }
+
+  // 1. Add `compliance-gap` label to the issue
+  const labelRes = await api.asApp().requestJira(route`/rest/api/3/issue/${issueKey}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      update: {
+        labels: [{ add: "compliance-gap" }],
+      },
+    }),
+  });
+
+  if (!labelRes.ok) {
+    throw new Error(`Failed to add label on ${issueKey}: ${await labelRes.text()}`);
+  }
+
+  // 2. Post an audit comment explaining the gap
+  const commentText = `[Compliance Trace Auditor | ${gapType}] Flagged gap on ${issueKey}: ${reason}`;
+  const commentRes = await api
+    .asApp()
+    .requestJira(route`/rest/api/3/issue/${issueKey}/comment`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        body: {
+          type: "doc",
+          version: 1,
+          content: [
+            {
+              type: "paragraph",
+              content: [{ type: "text", text: commentText }],
+            },
+          ],
+        },
+      }),
+    });
+
+  if (!commentRes.ok) {
+    throw new Error(`Failed to comment on ${issueKey}: ${await commentRes.text()}`);
+  }
+
+  // 3. Optionally create a remediation subtask under the flagged issue
+  let remediationKey: string | null = null;
+  if (createRemediationSubtask) {
+    const issueMetaRes = await api
+      .asApp()
+      .requestJira(route`/rest/api/3/issue/${issueKey}?fields=project,issuetype`);
+
+    if (issueMetaRes.ok) {
+      const meta = await issueMetaRes.json();
+      const projectKey: string | undefined = meta?.fields?.project?.key;
+
+      if (projectKey) {
+        const createRes = await api
+          .asApp()
+          .requestJira(route`/rest/api/3/issue`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              fields: {
+                project: { key: projectKey },
+                parent: { key: issueKey },
+                summary: `[Remediation] Resolve ${gapType} for ${issueKey}`,
+                issuetype: { name: "Sub-task" },
+                description: {
+                  type: "doc",
+                  version: 1,
+                  content: [
+                    {
+                      type: "paragraph",
+                      content: [{ type: "text", text: reason }],
+                    },
+                  ],
+                },
+              },
+            }),
+          });
+
+        if (createRes.ok) {
+          const created = await createRes.json();
+          remediationKey = created.key ?? null;
+        }
+      }
+    }
+  }
+
+  return {
+    success: true,
+    issueKey,
+    gapType,
+    labelAdded: "compliance-gap",
+    remediationSubtask: remediationKey,
+    message: remediationKey
+      ? `Flagged ${issueKey} and created remediation subtask ${remediationKey}.`
+      : `Flagged ${issueKey} with compliance-gap label and audit comment.`,
+  };
+}
