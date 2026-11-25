@@ -1,56 +1,58 @@
 import Resolver from '@forge/resolver';
 import api, { route } from '@forge/api';
 
+// --- GRAPH RESOLVER (Macro + Matrix Page) ---
 const resolver = new Resolver();
 
-resolver.define('getTraceability', async ({ payload }) => {
-  // MVP: return mock data so deploy passes, we wire real Jira/Confluence next
+resolver.define('getTraceability', async () => {
   return {
     requirements: [
-      {
-        id: 'REQ-001',
-        title: 'Patient data must be encrypted at rest',
-        standard: 'FDA 21 CFR Part 11',
-        epic: 'EPIC-101',
-        stories: 3,
-        prs: 2,
-        tests: 2,
-        status: 'COMPLETE',
-        orphan: false
-      },
-      {
-        id: 'REQ-002',
-        title: 'Audit trail for consent changes',
-        standard: 'ISO 13485',
-        epic: 'EPIC-102',
-        stories: 1,
-        prs: 0,
-        tests: 0,
-        status: 'ORPHAN - No PR / No Test',
-        orphan: true
-      },
-      {
-        id: 'REQ-003',
-        title: 'Clinical trial data retention 15 years',
-        standard: 'SOC 2',
-        epic: null,
-        stories: 0,
-        prs: 0,
-        tests: 0,
-        status: 'ORPHAN - No Epic',
-        orphan: true
-      }
+      { id: 'REQ-001', title: 'Patient data must be encrypted at rest', standard: 'FDA 21 CFR Part 11', epic: 'EPIC-101', stories: 3, prs: 2, tests: 2, status: 'COMPLETE', orphan: false },
+      { id: 'REQ-002', title: 'Audit trail for consent changes', standard: 'ISO 13485', epic: 'EPIC-102', stories: 1, prs: 0, tests: 0, status: 'ORPHAN - No PR / No Test', orphan: true },
+      { id: 'REQ-003', title: 'Clinical trial data retention 15 years', standard: 'SOC 2', epic: null, stories: 0, prs: 0, tests: 0, status: 'ORPHAN - No Epic', orphan: true },
     ],
     coverage: 33,
-    orphans: 2
+    orphans: 2,
   };
 });
 
 resolver.define('getOrphans', async () => {
   return [
     { type: 'PR without Jira', id: 'PR-452', link: 'bitbucket.org/.../pull-requests/452' },
-    { type: 'Story without Test', id: 'STORY-88', link: 'jira/.../STORY-88' }
+    { type: 'Story without Test', id: 'STORY-88', link: 'jira/.../STORY-88' },
   ];
 });
 
-export const handler = resolver.getDefinitions();
+export const runResolver = resolver.getDefinitions();
+
+// --- TRIGGER: Daily Audit Scan ---
+export async function runScan(event, context) {
+  console.log('Audit scan triggered for:', event.issue?.key);
+  // MVP: log only. Next step: fetch issue, check if it has Confluence req + test link, if not -> create flag
+  // You can store orphans in Forge storage here
+  return { scanned: true, issue: event.issue?.key };
+}
+
+// --- ACTION: Rovo Agent Flag Gap ---
+export async function flagGap({ payload }) {
+  const { issueKey, reason } = payload;
+  console.log(`Flagging gap for ${issueKey}: ${reason}`);
+
+  // Add a comment to the Jira issue flagging the gap
+  try {
+    await api.asApp().requestJira(route`/rest/api/3/issue/${issueKey}/comment`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        body: {
+          type: 'doc',
+          version: 1,
+          content: [{ type: 'paragraph', content: [{ type: 'text', text: `🚨 COMPLIANCE GAP FLAGGED: ${reason}` }] }]
+        }
+      })
+    });
+    return { success: true, issueKey };
+  } catch (e) {
+    return { success: false, error: String(e) };
+  }
+}
