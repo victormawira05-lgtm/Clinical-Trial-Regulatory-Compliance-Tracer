@@ -1,0 +1,62 @@
+modules:
+  confluence:macro:
+    - key: compliance-req-macro
+      resource: macro-ui
+      render: native
+      resolver:
+        function: graph-resolver
+      title: Compliance Trace Badge
+  jira:projectPage:
+    - key: compliance-matrix-page
+      resource: matrix-ui
+      render: native
+      resolver:
+        function: graph-resolver
+      title: Compliance Traceability Matrix
+  trigger:
+    - key: daily-audit-scan
+      function: audit-scanner
+      events:
+        - avi:jira:updated:issue
+      filter:
+        ignoreSelf: true
+  rovo:agent:
+    - key: compliance-auditor-agent
+      name: Compliance Trace Auditor
+      description: Finds orphan changes and missing test evidence across requirements, Jira issues, and code.
+      prompt: >
+        Inspect linked Confluence requirements, Jira issues, and code/test status.
+        Flag orphan changes, missing approvals, or untested requirements clearly.
+      actions:
+        - flag-compliance-gap
+  action:
+    - key: flag-compliance-gap
+      function: flag-gap-action
+      name: Flag Compliance Gap
+      inputs:
+        issueKey:
+          title: Jira Issue Key
+          type: string
+          required: true
+        reason:
+          title: Audit Gap Reason
+          type: string
+          required: true
+function:
+  - key: graph-resolver
+    handler: index.runResolver
+  - key: audit-scanner
+    handler: index.runScan
+  - key: flag-gap-action
+    handler: index.flagGap
+resources:
+  - key: macro-ui
+    path: src/frontend/macro.jsx
+  - key: matrix-ui
+    path: src/frontend/matrix.jsx
+permissions:
+  scopes:
+    - read:jira-work
+    - write:jira-work
+    - read:confluence-content.summary
+    - storage:app
